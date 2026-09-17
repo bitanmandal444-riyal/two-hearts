@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Two Hearts — Long Distance Game</title>
+<style>
+:root{--bg:#fff7fb;--card:#fff;--ink:#27212a;--muted:#756b76;--accent:#e85d91;--accent2:#9b6cff;--line:#eadce5}
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:linear-gradient(135deg,#fff7fb,#f7f2ff);color:var(--ink)}
+main{max-width:820px;margin:auto;padding:22px}
+h1{font-size:32px;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 20px}
+.card{background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:20px;padding:18px;margin:14px 0}
+.row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1;min-width:150px}
+input,button,textarea{font:inherit;border-radius:12px;border:1px solid var(--line);padding:12px}
+input{width:100%;background:#fff}button{cursor:pointer;background:var(--accent);color:white;border:0;font-weight:700;min-height:44px}
+button.alt{background:#f0e8ef;color:var(--ink)}button:disabled{opacity:.5;cursor:not-allowed}
+.code{font-family:ui-monospace,monospace;font-size:20px;letter-spacing:2px;text-align:center;padding:12px;background:#faf4f8;border-radius:12px;margin:10px 0}
+.status{padding:10px 12px;border-radius:12px;background:#f7f1f8;color:var(--muted)}.status.ok{background:#eef9f3;color:#286244}
+.score{display:flex;justify-content:space-around;text-align:center;font-weight:700}.score b{display:block;font-size:30px}
+.game{display:none}.game.on{display:block}.question{font-size:24px;font-weight:750;line-height:1.25;margin:18px 0}.answers{display:grid;gap:10px}.answers button{background:#f5edf3;color:var(--ink);text-align:left}.answers button:hover{background:#eadce6}
+.small{font-size:13px;color:var(--muted)}#roundMsg{min-height:24px;margin-top:12px;font-weight:650}
+</style>
+</head>
+<body>
+<main>
+  <h1>💗 Two Hearts</h1>
+  <p class="sub">A tiny real-time game for you and your girlfriend — just open this page in two browsers.</p>
+
+  <section class="card" id="setup">
+    <div class="row">
+      <div><label>Your name<br><input id="name" maxlength="20" placeholder="e.g. Bitan"></label></div>
+      <div><label>Choose a role<br><select id="role" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:12px"><option value="host">Create room</option><option value="guest">Join room</option></select></label></div>
+    </div>
+    <div id="hostBox" style="margin-top:14px">
+      <button id="create">Create room</button>
+      <div id="roomCode" class="code" style="display:none"></div>
+      <p class="small">Send the room code to your partner. They choose “Join room”.</p>
+    </div>
+    <div id="guestBox" style="display:none;margin-top:14px">
+      <label>Room code<br><input id="joinCode" maxlength="40" placeholder="Paste room code"></label>
+      <button id="join" style="margin-top:10px">Join room</button>
+    </div>
+    <div id="status" class="status" style="margin-top:14px">Waiting to connect…</div>
+  </section>
+
+  <section class="card game" id="game">
+    <div class="score"><div id="meScore"><b>0</b>You</div><div id="oppScore"><b>0</b>Partner</div></div>
+    <div class="question" id="question">Get ready ❤️</div>
+    <div class="answers" id="answers"></div>
+    <div id="roundMsg"></div>
+    <button class="alt" id="next" style="display:none;margin-top:12px">Next question</button>
+  </section>
+
+  <section class="card">
+    <b>How it works</b>
+    <p class="small">Each round asks a cute “how well do you know me?” question. Both players answer privately; after both answer, the game reveals whether your answers match.</p>
+    <p class="small">This demo uses a peer-to-peer connection through PeerJS for signaling. No account or app installation is required.</p>
+  </section>
+</main>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(() => {
+const $=id=>document.getElementById(id);
+const questions=[
+ {q:"What would I choose for our perfect date?",a:["Movie + snacks","Long drive","Fancy dinner","Random adventure"]},
+ {q:"Who is more likely to say “I miss you” first?",a:["Me","You","Both at the same time","Neither 😭"]},
+ {q:"What gift would make me happiest?",a:["Handwritten letter","Something useful","A surprise date","Something sentimental"]},
+ {q:"If we could teleport anywhere together tonight, where?",a:["Beach","Mountains","A city at night","Our favourite place"]},
+ {q:"What do I need most after a bad day?",a:["A hug","Food","Someone to listen","A distraction"]},
+ {q:"Which sounds most like us?",a:["Chaotic + cute","Calm + romantic","Best friends","All of the above"]},
+ {q:"Who would survive longer without texting?",a:["Me 😂","You 😂","Neither","We'd never test it"]},
+ {q:"Our relationship superpower is…",a:["Making each other laugh","Talking for hours","Supporting each other","Missing each other dramatically"]}
+];
+let peer=null,conn=null,isHost=false,myName="",oppName="Partner",scores={me:0,opp:0},round=0,myAnswer=null,oppAnswer=null;
+
+$("role").addEventListener("change",()=>{
+ const host=$("role").value==="host"; $("hostBox").style.display=host?"block":"none"; $("guestBox").style.display=host?"none":"block";
+});
+function status(t,ok=false){$("status").textContent=t;$("status").className="status"+(ok?" ok":"")}
+function send(msg){if(conn&&conn.open)conn.send(msg)}
+function startGame(){ $("setup").style.display="none"; $("game").classList.add("on"); renderQuestion(); }
+function renderQuestion(){
+ const x=questions[round%questions.length]; $("question").textContent=x.q; $("answers").innerHTML="";
+ $("roundMsg").textContent="Choose your answer. Your partner won't see it until both have answered.";
+ $("next").style.display="none"; myAnswer=null;oppAnswer=null;
+ x.a.forEach((text,i)=>{const b=document.createElement("button");b.type="button";b.textContent=text;b.onclick=()=>answer(i);$("answers").appendChild(b)});
+}
+function answer(i){
+ if(myAnswer!==null)return; myAnswer=i;
+ [...$("answers").children].forEach((b,n)=>{b.disabled=true;if(n===i)b.textContent="✓ "+b.textContent});
+ send({type:"answer",round,answer:i});
+ $("roundMsg").textContent="Answer locked 💗 Waiting for your partner…";
+ if(oppAnswer!==null)resolve();
+}
+function resolve(){
+ const x=questions[round%questions.length];
+ const match=myAnswer===oppAnswer;
+ if(match){scores.me++;scores.opp++}
+ $("meScore").querySelector("b").textContent=scores.me;
+ $("oppScore").querySelector("b").textContent=scores.opp;
+ $("roundMsg").textContent=match?"MATCH! 🥹 You two think alike.":"Not a match 😭 Compare answers and argue lovingly.";
+ $("answers").innerHTML="";
+ x.a.forEach((t,i)=>{const b=document.createElement("div");b.textContent=(i===myAnswer?"You: ":"Partner: ")+t+(i===myAnswer&&i===oppAnswer?" 💗":"");b.style.padding="10px 12px";b.style.borderRadius="10px";b.style.background=i===myAnswer&&i===oppAnswer?"#eef9f3":"#f7f1f8";$("answers").appendChild(b)});
+ $("next").style.display="block";
+}
+$("next").onclick=()=>{round++;send({type:"next",round});renderQuestion()};
+
+$("create").onclick=()=>{
+ myName=$("name").value.trim()||"You";isHost=true;
+ peer=new Peer();
+ peer.on("open",id=>{
+   const code=id; $("roomCode").textContent=code;$("roomCode").style.display="block";
+   status("Room created. Send the code to your partner.");
+ });
+ peer.on("connection",c=>{if(conn)return;setupConnection(c)});
+ peer.on("error",e=>status("Connection error: "+e.type));
+};
+$("join").onclick=()=>{
+ myName=$("name").value.trim()||"You";isHost=false;
+ const code=$("joinCode").value.trim(); if(!code){status("Enter the room code.");return}
+ peer=new Peer();
+ peer.on("open",()=>{status("Connecting…");setupConnection(peer.connect(code))});
+ peer.on("error",e=>status("Connection error: "+e.type));
+};
+function setupConnection(c){
+ conn=c;
+ c.on("open",()=>{
+   send({type:"hello",name:myName});
+   status("Connected to your partner ❤️",true);
+   if(isHost)setTimeout(startGame,500);
+ });
+ c.on("data",m=>{
+   if(m.type==="hello"){oppName=m.name||"Partner";$("oppScore").lastChild.textContent=oppName}
+   if(m.type==="answer"){if(m.round!==round)return;oppAnswer=m.answer;if(myAnswer!==null)resolve()}
+   if(m.type==="next"){if(m.round===round+1){round=m.round;renderQuestion()}}
+ });
+ c.on("close",()=>status("Partner disconnected."));
+ c.on("error",()=>status("Connection error."));
+}
+})();
+</script>
+</body>
+</html>
